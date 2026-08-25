@@ -2,3 +2,5 @@ venv/
 logs/
 raw/
 __pycache__/
+processed/
+processed_mad/
