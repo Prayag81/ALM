@@ -1,6 +1,6 @@
 venv/
-raw/
-processed/
 logs/
-models/
+raw/
 __pycache__/
+processed/
+processed_mad/

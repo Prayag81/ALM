@@ -151,3 +151,98 @@ if __name__ == '__main__':
     print(f'  Flatten     : {tuple(x.shape)}')
     x = model.projector(x)
     print(f'  Projector   : {tuple(x.shape)}')
+
+
+
+class MultiLabelAudioEncoder(nn.Module):
+    """
+    CNN + Transformer encoder with a multi-label classification head.
+
+    Architecture:
+        MelSpec (1, N_MELS, T)
+        → CNN backbone  (conv blocks)
+        → Adaptive avg pool → Flatten
+        → Linear projector → embed_dim
+        → LayerNorm
+        → num_classes logits  (raw, no sigmoid)
+
+    ⚠️  Do NOT add sigmoid here.
+        BCEWithLogitsLoss applies it internally for numerical stability.
+        At inference: probs = torch.sigmoid(logits)
+    """
+
+    def __init__(
+        self,
+        n_mels     : int   = 128,
+        embed_dim  : int   = 256,
+        num_heads  : int   = 8,
+        num_layers : int   = 6,
+        ff_dim     : int   = 512,
+        dropout    : float = 0.1,
+        num_classes: int   = 10,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+
+        # ── CNN Backbone ─────────────────────────────────────────────────────
+        self.backbone = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.BatchNorm2d(32), nn.GELU(),
+            nn.Conv2d(32, 32, 3, padding=1), nn.BatchNorm2d(32), nn.GELU(),
+            nn.MaxPool2d(2, 2), nn.Dropout2d(dropout / 2),
+
+            nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.GELU(),
+            nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64), nn.GELU(),
+            nn.MaxPool2d(2, 2), nn.Dropout2d(dropout / 2),
+
+            nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.GELU(),
+            nn.Conv2d(128, 128, 3, padding=1), nn.BatchNorm2d(128), nn.GELU(),
+            nn.MaxPool2d(2, 2), nn.Dropout2d(dropout),
+        )
+
+        self.pool = nn.AdaptiveAvgPool2d((4, 8))
+
+        cnn_flat = 128 * 4 * 8  # = 4096
+        self.projector = nn.Sequential(
+            nn.Linear(cnn_flat, embed_dim * 2), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim),
+        )
+
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, nhead=num_heads,
+            dim_feedforward=ff_dim, dropout=dropout,
+            batch_first=True, norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+
+        self.norm       = nn.LayerNorm(embed_dim)
+        self.classifier = nn.Linear(embed_dim, num_classes)  # ⚠️ raw logits
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv2d)):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.LayerNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def encode(self, mel: torch.Tensor) -> torch.Tensor:
+        """Returns L2-normalised embeddings (B, embed_dim)."""
+        x = self.backbone(mel)
+        x = self.pool(x)
+        x = x.flatten(1)
+        x = self.projector(x)
+        x = x.unsqueeze(1)
+        x = self.transformer(x)
+        x = x.squeeze(1)
+        x = self.norm(x)
+        return F.normalize(x, dim=-1)
+
+    def forward(self, mel: torch.Tensor) -> torch.Tensor:
+        """Returns raw logits (B, num_classes). ⚠️ No sigmoid."""
+        emb    = self.encode(mel)
+        logits = self.classifier(emb)
+        return logits
