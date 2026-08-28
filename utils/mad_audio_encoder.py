@@ -46,10 +46,10 @@ class ConvBlock(nn.Module):
 
         padding = kernel_size // 2
 
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, padding=padding)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, padding=padding, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
 
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, padding=padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size, padding=padding, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
         self.relu = nn.ReLU(inplace=True)
@@ -132,8 +132,9 @@ class MADAudioEncoder(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Linear):
-                nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
-                nn.init.zeros_(module.bias)
+                nn.init.trunc_normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
             elif isinstance(module, nn.BatchNorm2d):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
